@@ -35,6 +35,12 @@ class FetchRequestBundle(implicit p: Parameters) extends XSBundle {
     val carry = startAddr(carryPos) =/= fallThruAddr(carryPos)
     !carry && getLower(startAddr) > getLower(fallThruAddr)
   }
+  def fromFtqPcBundle(b: Ftq_RF_Components) = {
+    this.startAddr := b.startAddr
+    this.fallThruAddr := b.getFallThrough()
+    this.oversize := b.oversize
+    this
+  }
   override def toPrintable: Printable = {
     p"[start] ${Hexadecimal(startAddr)} [pft] ${Hexadecimal(fallThruAddr)}" +
       p"[tgt] ${Hexadecimal(target)} [ftqIdx] $ftqIdx [jmp] v:${ftqOffset.valid}" +

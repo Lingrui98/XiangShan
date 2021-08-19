@@ -86,6 +86,17 @@ class Ftq_RF_Components(implicit p: Parameters) extends XSBundle with BPUUtils {
   def fallThroughError() = {
     !carry && startAddr(instOffsetBits+log2Ceil(PredictWidth), instOffsetBits) > pftAddr
   }
+  def fromBpuResp(resp: BpuToFtqBundle) = {
+    this.startAddr := resp.pc
+    this.nextRangeAddr := resp.pc + (FetchWidth * 4).U
+    this.pftAddr := resp.ftb_entry.pftAddr
+    this.isNextMask := VecInit((0 until PredictWidth).map(i =>
+      (resp.pc(log2Ceil(PredictWidth), 1) +& i.U)(log2Ceil(PredictWidth)).asBool()
+    ))
+    this.oversize := resp.ftb_entry.oversize
+    this.carry := resp.ftb_entry.carry
+    this
+  }
   override def toPrintable: Printable = {
     p"startAddr:${Hexadecimal(startAddr)}, fallThru:${Hexadecimal(getFallThrough())}"
   }
@@ -136,6 +147,16 @@ class Ftq_Redirect_SRAMEntry(implicit p: Parameters) extends XSBundle with HasBP
   val ghist = new GlobalHistory
   val phist = UInt(PathHistoryLength.W)
   val phNewBit = UInt(1.W)
+
+  def fromBpuResp(resp: BpuToFtqBundle) = {
+    this.rasSp := resp.rasSp
+    this.rasEntry := resp.rasTop
+    this.specCnt := resp.specCnt
+    this.ghist := resp.ghist
+    this.phist := resp.phist
+    this.phNewBit := resp.pc(instOffsetBits)
+    this
+  }
 }
 
 class Ftq_1R_SRAMEntry(implicit p: Parameters) extends XSBundle with HasBPUConst {
@@ -386,25 +407,13 @@ class Ftq(implicit p: Parameters) extends XSModule with HasCircularQueuePtrHelpe
   val ftq_pc_mem = Module(new SyncDataModuleTemplate(new Ftq_RF_Components, FtqSize, 1+numRedirect+2+1+1+1, 1))
   ftq_pc_mem.io.wen(0) := enq_fire
   ftq_pc_mem.io.waddr(0) := bpuPtr.value
-  ftq_pc_mem.io.wdata(0).startAddr := io.fromBpu.resp.bits.pc
-  ftq_pc_mem.io.wdata(0).nextRangeAddr := io.fromBpu.resp.bits.pc + (FetchWidth * 4).U
-  ftq_pc_mem.io.wdata(0).pftAddr := io.fromBpu.resp.bits.ftb_entry.pftAddr
-  ftq_pc_mem.io.wdata(0).isNextMask := VecInit((0 until PredictWidth).map(i =>
-    (io.fromBpu.resp.bits.pc(log2Ceil(PredictWidth), 1) +& i.U)(log2Ceil(PredictWidth)).asBool()
-  ))
-  ftq_pc_mem.io.wdata(0).oversize := io.fromBpu.resp.bits.ftb_entry.oversize
-  ftq_pc_mem.io.wdata(0).carry := io.fromBpu.resp.bits.ftb_entry.carry
+  ftq_pc_mem.io.wdata(0).fromBpuResp(io.fromBpu.resp.bits)
 
   //                                                            ifuRedirect + backendRedirect + commit
   val ftq_redirect_sram = Module(new FtqNRSRAM(new Ftq_Redirect_SRAMEntry, 1+1+1))
   ftq_redirect_sram.io.wen := enq_fire
   ftq_redirect_sram.io.waddr := bpuPtr.value
-  ftq_redirect_sram.io.wdata.rasSp := io.fromBpu.resp.bits.rasSp
-  ftq_redirect_sram.io.wdata.rasEntry := io.fromBpu.resp.bits.rasTop
-  ftq_redirect_sram.io.wdata.specCnt := io.fromBpu.resp.bits.specCnt
-  ftq_redirect_sram.io.wdata.ghist := io.fromBpu.resp.bits.ghist
-  ftq_redirect_sram.io.wdata.phist := io.fromBpu.resp.bits.phist
-  ftq_redirect_sram.io.wdata.phNewBit := io.fromBpu.resp.bits.pc(instOffsetBits)
+  ftq_redirect_sram.io.wdata.fromBpuResp(io.fromBpu.resp.bits)
 
   val ftq_meta_1r_sram = Module(new FtqNRSRAM(new Ftq_1R_SRAMEntry, 1))
   ftq_meta_1r_sram.io.wen := enq_fire
@@ -432,22 +441,6 @@ class Ftq(implicit p: Parameters) extends XSModule with HasCircularQueuePtrHelpe
 
   val h_not_hit :: h_false_hit :: h_hit :: Nil = Enum(3)
   val entry_hit_status = RegInit(VecInit(Seq.fill(FtqSize)(h_not_hit)))
-
-  // 'from' is older in fetch sequence
-  def set_status_between[T <: Data](status_vec: Vec[T])(from: FtqPtr, to: FtqPtr, status: T) = {
-    require(status_vec.length == FtqSize)
-    XSError(isAfter(from, to), "in set_status_between, \'from\' must be not after \'to\'\n")
-    for (i <- 0 until FtqSize) {
-      val wen = (from.value < to.value && i.U >= from.value && i.U < to.value) ||
-                (from.value > to.value && i.U >= from.value || i.U < to.value) ||
-                (from.flag =/= to.flag)
-      when (wen) {
-        status_vec(i) := status
-      }
-    }
-  }
-  val set_fetch_status_between = set_status_between(entry_fetch_status)(_, _, _)
-  val set_commit_status_between = set_status_between(commitStateQueue)(_, _, _)
 
   when (enq_fire) {
     val enqIdx = bpuPtr.value
@@ -481,8 +474,7 @@ class Ftq(implicit p: Parameters) extends XSModule with HasCircularQueuePtrHelpe
   ftq_pd_mem.io.waddr(0) := pdWb.bits.ftqIdx.value
   ftq_pd_mem.io.wdata(0).fromPdWb(pdWb.bits)
 
-  val hit_pd_valid = entry_hit_status(ifu_wb_idx) === h_hit &&
-                     ifu_wb_valid
+  val hit_pd_valid = entry_hit_status(ifu_wb_idx) === h_hit && ifu_wb_valid
   val hit_pd_mispred = hit_pd_valid && pdWb.bits.misOffset.valid
   val hit_pd_mispred_reg = RegNext(hit_pd_mispred, init=false.B)
   val pd_reg       = RegEnable(pds,             enable = pdWb.valid)
@@ -547,17 +539,11 @@ class Ftq(implicit p: Parameters) extends XSModule with HasCircularQueuePtrHelpe
   toIfuReq.bits.ftqOffset := cfiIndex_vec(ifuPtr.value)
   
   when (last_cycle_bpu_enq && bpu_enq_bypass_ptr === ifuPtr) {
-    toIfuReq.bits.startAddr    := bpu_enq_bypass_buf.startAddr
-    toIfuReq.bits.fallThruAddr := bpu_enq_bypass_buf.getFallThrough()
-    toIfuReq.bits.oversize     := bpu_enq_bypass_buf.oversize
+    toIfuReq.bits.fromFtqPcBundle(bpu_enq_bypass_buf)
   }.elsewhen (last_cycle_to_ifu_fire) {
-    toIfuReq.bits.startAddr    := ftq_pc_mem.io.rdata.init.last.startAddr
-    toIfuReq.bits.fallThruAddr := ftq_pc_mem.io.rdata.init.last.getFallThrough()
-    toIfuReq.bits.oversize     := ftq_pc_mem.io.rdata.init.last.oversize
+    toIfuReq.bits.fromFtqPcBundle(ftq_pc_mem.io.rdata.init.last)
   }.otherwise {
-    toIfuReq.bits.startAddr    := ftq_pc_mem.io.rdata.init.init.last.startAddr
-    toIfuReq.bits.fallThruAddr := ftq_pc_mem.io.rdata.init.init.last.getFallThrough()
-    toIfuReq.bits.oversize     := ftq_pc_mem.io.rdata.init.init.last.oversize
+    toIfuReq.bits.fromFtqPcBundle(ftq_pc_mem.io.rdata.init.init.last)
   }
 
   io.toIfu.req <> toIfuReq
@@ -586,6 +572,11 @@ class Ftq(implicit p: Parameters) extends XSModule with HasCircularQueuePtrHelpe
   }
   // target read
   io.toBackend.target_read.data := RegNext(update_target(io.toBackend.target_read.ptr.value))
+
+  // *******************************************************************************
+  // **************************** redirect from backend ****************************
+  // *******************************************************************************
+  
   // redirect read cfiInfo, couples to redirectGen s2
   ftq_redirect_sram.io.ren.init.last := io.fromBackend.stage2Redirect.valid
   ftq_redirect_sram.io.raddr.init.last := io.fromBackend.stage2Redirect.bits.ftqIdx.value
@@ -595,11 +586,7 @@ class Ftq(implicit p: Parameters) extends XSModule with HasCircularQueuePtrHelpe
   val stage3CfiInfo = ftq_redirect_sram.io.rdata.init.last
   val fromBackendRedirect = WireInit(io.fromBackend.stage3Redirect)
   val backendRedirectCfi = fromBackendRedirect.bits.cfiUpdate
-  backendRedirectCfi.hist := ftq_redirect_sram.io.rdata.init.last.ghist
-  backendRedirectCfi.phist := ftq_redirect_sram.io.rdata.init.last.phist
-  backendRedirectCfi.phNewBit := ftq_redirect_sram.io.rdata.init.last.phNewBit
-  backendRedirectCfi.br_hit := ftb_entry_mem.io.rdata.init.last.hasBr(fromBackendRedirect.bits.ftqOffset) &&
-                               entry_hit_status(fromBackendRedirect.bits.ftqIdx.value) === h_hit
+  backendRedirectCfi.fromFtqRedirectSram(stage3CfiInfo)
 
   val r_ftb_entry = ftb_entry_mem.io.rdata.init.last
   val r_ftqOffset = fromBackendRedirect.bits.ftqOffset
@@ -615,10 +602,7 @@ class Ftq(implicit p: Parameters) extends XSModule with HasCircularQueuePtrHelpe
     backendRedirectCfi.shift := backendRedirectCfi.pd.isBr.asUInt
     backendRedirectCfi.addIntoHist := backendRedirectCfi.pd.isBr.asUInt
   }
-  
-  backendRedirectCfi.rasSp := stage3CfiInfo.rasSp
-  backendRedirectCfi.rasEntry := stage3CfiInfo.rasEntry
-  backendRedirectCfi.specCnt := stage3CfiInfo.specCnt
+
 
   // ***************************************************************************
   // **************************** redirect from ifu ****************************
@@ -647,15 +631,7 @@ class Ftq(implicit p: Parameters) extends XSModule with HasCircularQueuePtrHelpe
   ftb_entry_mem.io.raddr.head := fromIfuRedirect.bits.ftqIdx.value
 
   val toBpuCfi = ifuRedirectToBpu.bits.cfiUpdate
-  toBpuCfi.hist := ftq_redirect_sram.io.rdata.head.ghist
-  toBpuCfi.phist := ftq_redirect_sram.io.rdata.head.phist
-  toBpuCfi.phNewBit := ftq_redirect_sram.io.rdata.head.phNewBit
-  toBpuCfi.br_hit := ftb_entry_mem.io.rdata.head.hasBr(ifuRedirectToBpu.bits.ftqOffset) &&
-                     entry_hit_status(ifuRedirectToBpu.bits.ftqIdx.value) === h_hit &&
-                     !has_false_hit
-  toBpuCfi.rasSp := ftq_redirect_sram.io.rdata.head.rasSp
-  toBpuCfi.rasEntry := ftq_redirect_sram.io.rdata.head.rasEntry
-  toBpuCfi.specCnt := ftq_redirect_sram.io.rdata.head.specCnt
+  toBpuCfi.fromFtqRedirectSram(ftq_redirect_sram.io.rdata.head)
   when (ifuRedirectReg.bits.cfiUpdate.pd.isRet) {
     toBpuCfi.target := toBpuCfi.rasEntry.retAddr
   }
