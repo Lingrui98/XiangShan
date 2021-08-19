@@ -403,6 +403,7 @@ class Ftq(implicit p: Parameters) extends XSModule with HasCircularQueuePtrHelpe
   // **********************************************************************
   io.fromBpu.resp.ready := validEntries < FtqSize.U
   val enq_fire = io.fromBpu.resp.fire() && allowBpuIn
+  io.toBpu.enq_ptr := bpuPtr
 
   // read ports:                            jumpPc + redirects + loadPred + roqFlush + ifuReq1 + ifuReq2 + commitUpdate
   val ftq_pc_mem = Module(new SyncDataModuleTemplate(new Ftq_RF_Components, FtqSize, 1+numRedirect+2+1+1+1, 1))
