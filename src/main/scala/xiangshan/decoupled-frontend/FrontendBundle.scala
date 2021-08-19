@@ -152,6 +152,9 @@ class BranchPrediction(implicit p: Parameters) extends XSBundle with HasBPUConst
 
 class BranchPredictionBundle(implicit p: Parameters) extends XSBundle with HasBPUConst with BPUUtils{
   val pc = UInt(VAddrBits.W)
+  
+  val hasRedirect = Bool()
+  val ftq_idx = new FtqPtr
   // val hit = Bool()
   val preds = new BranchPrediction
 
@@ -214,7 +217,7 @@ class BranchPredictionResp(implicit p: Parameters) extends XSBundle with HasBPUC
   val s3 = new BranchPredictionBundle()
 }
 
-class BpuToFtqBundle(implicit p: Parameters) extends BranchPredictionBundle with HasBPUConst {
+class BpuToFtqBundle(implicit p: Parameters) extends BranchPredictionResp with HasBPUConst {
   val meta = UInt(MaxMetaLength.W)
 }
 

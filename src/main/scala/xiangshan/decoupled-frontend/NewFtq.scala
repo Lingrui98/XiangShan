@@ -207,6 +207,7 @@ class FtqRead[T <: Data](private val gen: T)(implicit p: Parameters) extends XSB
 class FtqToBpuIO(implicit p: Parameters) extends XSBundle {
   val redirect = Valid(new BranchPredictionRedirect)
   val update = Valid(new BranchPredictionUpdate)
+  val enq_ptr = Output(new FtqPtr)
 }
 
 class FtqToIfuIO(implicit p: Parameters) extends XSBundle {
@@ -599,7 +600,7 @@ class Ftq(implicit p: Parameters) extends XSModule with HasCircularQueuePtrHelpe
     backendRedirectCfi.addIntoHist := backendRedirectCfi.pd.isBr && (r_ftb_entry.brIsSaved(r_ftqOffset) ||
         !(r_ftb_entry.brValids(numBr-1) && r_ftqOffset > r_ftb_entry.brOffset(numBr-1)))
   }.otherwise {
-    backendRedirectCfi.shift := backendRedirectCfi.pd.isBr.asUInt
+    backendRedirectCfi.shift := backendRedirectCfi.pd.isBr.asUInt && backendRedirectCfi.taken
     backendRedirectCfi.addIntoHist := backendRedirectCfi.pd.isBr.asUInt
   }
 
