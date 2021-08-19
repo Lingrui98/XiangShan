@@ -214,7 +214,9 @@ class BranchPredictionResp(implicit p: Parameters) extends XSBundle with HasBPUC
   // val valids = Vec(3, Bool())
   val s1 = new BranchPredictionBundle()
   val s2 = new BranchPredictionBundle()
-  val s3 = new BranchPredictionBundle()
+  val s3 = new BranchPredictionBundle() 
+  
+  def lastStage = s3
 }
 
 class BpuToFtqBundle(implicit p: Parameters) extends BranchPredictionResp with HasBPUConst {
